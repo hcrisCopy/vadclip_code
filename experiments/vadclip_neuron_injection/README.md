@@ -1,56 +1,30 @@
 # VadCLIP 神经元残差注入（UCF）
 
-这个目录把给定的 DSANet 神经元实验迁到 VadCLIP，不修改 `VadCLIP/` 内任何 baseline 文件。所有新代码只读写当前仓库及其同级目录 `../vadclip_data/`；不会在代码或运行 CSV 中引用另一个项目。
+这个目录把给定的 DSANet 神经元实验迁到 VadCLIP，不修改 `VadCLIP/` 内任何 baseline 文件。代码不会导入或引用另一个项目的代码；共享数据输入直接读取同级 `../vad_data/`，VadCLIP 实验的所有新产物只写入同级 `../vadclip_data/`。
 
 方法保持如下边界：VadCLIP 的冻结 `logits1` 给异常训练视频生成伪分数；每个视频内部的 top/bottom `p` 片段形成配对 ShiftScore；每层各取 64 个 CLIP ViT-B/16 CLS 神经元，得到 768D z-score 特征；其与同时间步的 512D 最终 CLIP 特征拼成 1280D。训练时只学习一个带小门控的 `768 -> 1024 -> 1024 -> 512` 残差分支，原始 512D VadCLIP 始终冻结。
 
-## 数据独立与可复用输入
+## 可复用输入与输出边界
 
-先把已完成的 CLIP hidden 文件和相应 manifest **复制或同步**到下列目标目录；复制后不保留任何外部项目路径。
+VadCLIP 与 DSANet 的 UCF 官方 list 有完全一致的文件名和标签顺序（训练 16,100 行、测试 290 行），而且两者都使用 CLIP ViT-B/16 的 512D 最终特征。因此直接复用已完成的共享数据，不复制：
 
 ```text
-../vadclip_data/
-  UCFClipFeatures/                                  # 512D .npy，VadCLIP/DSANet 共用的 CLIP 输出
-  staging/
-    ucf_train_hidden_manifest.csv                   # 仅作为一次性导入清单
-    ucf_test_hidden_manifest.csv
+../vad_data/
+  UCFClipFeatures/                                  # 共用的官方 512D CLIP .npy
   work_ucf/
-    clip_hidden_stride16_train_8gpu/features/*.npz  # 已完成的 [T,12,768] CLS hidden
+    ucf_train_local.csv / ucf_test_local.csv         # 指向上述 512D .npy 的本地 CSV
+    clip_hidden_stride16_train_8gpu/manifest.csv     # 已完成的 train [T,12,768] CLS hidden
+    clip_hidden_stride16_train_8gpu/features/*.npz
+    clip_hidden_stride16_test_8gpu/manifest.csv      # 已完成的 test [T,12,768] CLS hidden
     clip_hidden_stride16_test_8gpu/features/*.npz
 ```
 
-hidden 的 stride、token pool、层数必须保持原实验的 `stride=16`、`token_pool=cls`、12 层。`stage_reused_hidden_manifest.py` 会忽略导入 manifest 的旧 `hidden_path`，改写成上述目录中的路径，从而使新仓库独立。旧 DSANet 的伪分数、神经元选择结果、768D/1280D 派生特征、checkpoint 和模型不能复用；共享的原始 512D CLIP 特征与 hidden 可以复用。新的伪分数必须由 VadCLIP checkpoint 产生。
+hidden 的 stride、token pool、层数必须保持原实验的 `stride=16`、`token_pool=cls`、12 层。这里复用的是数据资产，不是跨仓库代码依赖；新脚本只在运行时读取 `../vad_data` 的 CSV、`.npy` 和 `.npz`。旧 DSANet 的伪分数、神经元选择结果、768D/1280D 派生特征、checkpoint 和模型不能复用；新的伪分数必须由 VadCLIP checkpoint 产生。
 
 以下命令全部从 `vadclip_code` 运行。首次正式运行不加 `--clean`；数据构建、伪分数和测试默认会复用已完成的单项输出。需要故意从头做某阶段时，在该阶段添加 `--clean`。
 
 ```bash
 cd vadclip_code
-```
-
-先为 VadCLIP 原始 list 创建只指向 `../vadclip_data` 的 CSV，并把复制后的 manifest 本地化：
-
-```bash
-python experiments/vadclip_neuron_injection/prepare_local_feature_csv.py \
-  --input-csv VadCLIP/list/ucf_CLIP_rgb.csv \
-  --feature-root ../vadclip_data/UCFClipFeatures \
-  --output-csv ../vadclip_data/work_ucf/ucf_train_local.csv \
-  --strict
-
-python experiments/vadclip_neuron_injection/prepare_local_feature_csv.py \
-  --input-csv VadCLIP/list/ucf_CLIP_rgbtest.csv \
-  --feature-root ../vadclip_data/UCFClipFeatures \
-  --output-csv ../vadclip_data/work_ucf/ucf_test_local.csv \
-  --strict
-
-python experiments/vadclip_neuron_injection/stage_reused_hidden_manifest.py \
-  --input-manifest ../vadclip_data/staging/ucf_train_hidden_manifest.csv \
-  --hidden-root ../vadclip_data/work_ucf/clip_hidden_stride16_train_8gpu \
-  --out-manifest ../vadclip_data/work_ucf/clip_hidden_stride16_train_8gpu/manifest.csv
-
-python experiments/vadclip_neuron_injection/stage_reused_hidden_manifest.py \
-  --input-manifest ../vadclip_data/staging/ucf_test_hidden_manifest.csv \
-  --hidden-root ../vadclip_data/work_ucf/clip_hidden_stride16_test_8gpu \
-  --out-manifest ../vadclip_data/work_ucf/clip_hidden_stride16_test_8gpu/manifest.csv
 ```
 
 ## 正式流程
@@ -61,15 +35,15 @@ python experiments/vadclip_neuron_injection/stage_reused_hidden_manifest.py \
 python experiments/vadclip_neuron_injection/score_vadclip_pseudo.py \
   --dataset ucf \
   --vadclip-root VadCLIP \
-  --train-list ../vadclip_data/work_ucf/ucf_train_local.csv \
+  --train-list ../vad_data/work_ucf/ucf_train_local.csv \
   --model-path ../vadclip_data/model/vadclip_ucf.pth \
   --out-dir ../vadclip_data/work_ucf_residual/compare_bottom10/pseudo_scores \
   --device cuda
 
 python experiments/vadclip_neuron_injection/select_neurons_intravideo_paired.py \
   --dataset ucf \
-  --source-train-csv ../vadclip_data/work_ucf/ucf_train_local.csv \
-  --hidden-manifest ../vadclip_data/work_ucf/clip_hidden_stride16_train_8gpu/manifest.csv \
+  --source-train-csv ../vad_data/work_ucf/ucf_train_local.csv \
+  --hidden-manifest ../vad_data/work_ucf/clip_hidden_stride16_train_8gpu/manifest.csv \
   --pseudo-csv ../vadclip_data/work_ucf_residual/compare_bottom10/pseudo_scores/group_scores.csv \
   --out-dir ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/neurons \
   --top-p 0.10 \
@@ -84,15 +58,15 @@ python experiments/vadclip_neuron_injection/make_concat_neuron_json.py \
   --clip-dim 512
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
-  --source-csv ../vadclip_data/work_ucf/ucf_train_local.csv \
-  --hidden-manifest ../vadclip_data/work_ucf/clip_hidden_stride16_train_8gpu/manifest.csv \
+  --source-csv ../vad_data/work_ucf/ucf_train_local.csv \
+  --hidden-manifest ../vad_data/work_ucf/clip_hidden_stride16_train_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/features/train \
   --out-csv ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/ucf_concat_train.csv
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
-  --source-csv ../vadclip_data/work_ucf/ucf_test_local.csv \
-  --hidden-manifest ../vadclip_data/work_ucf/clip_hidden_stride16_test_8gpu/manifest.csv \
+  --source-csv ../vad_data/work_ucf/ucf_test_local.csv \
+  --hidden-manifest ../vad_data/work_ucf/clip_hidden_stride16_test_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/features/test \
   --out-csv ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/ucf_concat_test.csv
