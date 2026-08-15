@@ -37,13 +37,15 @@ def manifest_token_pool(path: str) -> str:
     return next(iter(pools))
 
 
-def target_lengths(path: str) -> dict[str, int]:
+def target_lengths(path: str, prefix_from: str = "", prefix_to: str = "") -> dict[str, int]:
+    """Return local target lengths, optionally rewriting an official CSV root."""
     if not path:
         return {}
     output: dict[str, int] = {}
     for _, row in read_csv(path).iterrows():
         source = str(row["path"])
-        length = int(load_clip_feature(source).shape[0])
+        mapped = source.replace(prefix_from, prefix_to) if prefix_from else source
+        length = int(load_clip_feature(mapped).shape[0])
         output[Path(source).stem] = length
         output.setdefault(base_key(source), length)
     return output
@@ -69,11 +71,13 @@ def selected_neuron_features(hidden: np.ndarray, normal_mean: np.ndarray, normal
 def main() -> None:
     parser = argparse.ArgumentParser(description="Construct 1280D VadCLIP residual-injection features.")
     parser.add_argument("--source-csv", required=True, help="Local path,label CSV; each path is a staged 512D CLIP .npy.")
-    parser.add_argument("--hidden-manifest", required=True, help="Staged reused hidden manifest, with only vadclip_data paths.")
+    parser.add_argument("--hidden-manifest", required=True, help="Reused hidden manifest from the shared data cache.")
     parser.add_argument("--neuron-json", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--out-csv", required=True)
     parser.add_argument("--target-feature-csv", default="", help="Optional local CSV whose feature lengths define test alignment.")
+    parser.add_argument("--target-prefix-from", default="", help="Optional root in target CSV paths to rewrite.")
+    parser.add_argument("--target-prefix-to", default="", help="Local replacement for --target-prefix-from.")
     parser.add_argument("--pad-short", action="store_true", help="Repeat the final row only when an explicitly chosen target is longer.")
     parser.add_argument("--l2-norm-clip", action="store_true")
     parser.add_argument("--keep-missing", action="store_true", help="Skip source rows missing a hidden artifact instead of failing.")
@@ -99,7 +103,7 @@ def main() -> None:
     selected = [(int(item["layer_index"]), np.asarray(item["dims"], dtype=np.int64)) for item in cfg["selected"]]
     if sum(len(dims) for _layer, dims in selected) != neuron_width:
         raise ValueError("selected dimension count does not match neuron_width")
-    target_by_stem = target_lengths(args.target_feature_csv)
+    target_by_stem = target_lengths(args.target_feature_csv, args.target_prefix_from, args.target_prefix_to)
     source = read_csv(args.source_csv)
     cache: dict[str, np.ndarray] = {}
     output_paths: set[Path] = set()

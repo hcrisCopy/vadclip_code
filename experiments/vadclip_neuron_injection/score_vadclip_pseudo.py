@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Write VadCLIP anomaly-classification pseudo scores for each UCF video.
+"""Write VadCLIP anomaly-classification pseudo scores for UCF or XD videos.
 
-Scores come from VadCLIP's original sigmoid ``logits1`` branch.  UCF's ten
-official training feature variants remain grouped by video exactly as in the
-DSANet-side pseudo-score stage.
+Scores come from VadCLIP's original sigmoid ``logits1`` branch.  Any feature
+variants bearing a common ``__<index>`` suffix are grouped by video exactly as
+in the DSANet-side pseudo-score stage.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from common import UCF_TEST_LABELS, clean_dir, ensure_dir, grouped_rows, load_clip_feature, read_csv, write_csv
+from common import XD_LABELS, UCF_TEST_LABELS, clean_dir, ensure_dir, grouped_rows, load_clip_feature, read_csv, write_csv
 
 
 def add_vadclip_source(vadclip_root: str) -> None:
@@ -24,12 +24,15 @@ def add_vadclip_source(vadclip_root: str) -> None:
         sys.path.insert(0, source)
 
 
-def load_vadclip_model(vadclip_root: str, model_path: str, device: torch.device):
+def load_vadclip_model(vadclip_root: str, model_path: str, device: torch.device, dataset: str):
     add_vadclip_source(vadclip_root)
     from model import CLIPVAD
-    import ucf_option
+    if dataset == "ucf":
+        import ucf_option as option_module
+    else:
+        import xd_option as option_module
 
-    options = ucf_option.parser.parse_args([])
+    options = option_module.parser.parse_args([])
     model = CLIPVAD(
         options.classes_num, options.embed_dim, options.visual_length, options.visual_width,
         options.visual_head, options.visual_layers, options.attn_window,
@@ -64,8 +67,8 @@ def score_feature(model, feature: np.ndarray, visual_length: int, prompt_text: l
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Score UCF training videos with the frozen VadCLIP classifier branch.")
-    parser.add_argument("--dataset", choices=["ucf"], required=True)
+    parser = argparse.ArgumentParser(description="Score training videos with the frozen VadCLIP classifier branch.")
+    parser.add_argument("--dataset", choices=["ucf", "xd"], required=True)
     parser.add_argument("--vadclip-root", default="VadCLIP")
     parser.add_argument("--train-list", required=True)
     parser.add_argument("--model-path", required=True)
@@ -85,8 +88,8 @@ def main() -> None:
         if group_csv.exists():
             group_csv.unlink()
 
-    model, options = load_vadclip_model(args.vadclip_root, args.model_path, device)
-    prompt_text = list(UCF_TEST_LABELS.values())
+    model, options = load_vadclip_model(args.vadclip_root, args.model_path, device, args.dataset)
+    prompt_text = list(UCF_TEST_LABELS.values() if args.dataset == "ucf" else XD_LABELS.values())
     rows = []
     groups = grouped_rows(read_csv(args.train_list))
     for key, group in tqdm(groups.items(), desc="VadCLIP pseudo scores", unit="video"):

@@ -1,8 +1,9 @@
 """Shared, repository-local utilities for the VadCLIP neuron experiment.
 
-The module deliberately contains no imports from the DSANet experiment.  Its
-input contract is limited to ordinary CSV/NumPy artifacts staged under the
-independent ``../vadclip_data`` directory.
+The module deliberately contains no imports from the DSANet experiment.  It
+accepts ordinary CSV/NumPy inputs from the shared ``../vad_data`` cache and
+writes new VadCLIP experiment artifacts under independent ``../vadclip_data``
+paths.
 """
 from __future__ import annotations
 
@@ -33,6 +34,12 @@ UCF_TEST_LABELS = {
     "Fighting": "Fighting", "RoadAccidents": "RoadAccidents", "Robbery": "Robbery",
     "Shooting": "Shooting", "Shoplifting": "Shoplifting", "Stealing": "Stealing",
     "Vandalism": "Vandalism",
+}
+
+# These strings and order follow ``VadCLIP/src/xd_train.py`` exactly.
+XD_LABELS = {
+    "A": "normal", "B1": "fighting", "B2": "shooting", "B4": "riot",
+    "B5": "abuse", "B6": "car accident", "G": "explosion",
 }
 
 
@@ -67,9 +74,14 @@ def chunk_index(path_or_key: str) -> int:
 
 
 def is_normal_label(dataset: str, label: str) -> bool:
-    if dataset.lower() != "ucf":
-        raise ValueError(f"Only the migrated UCF command is supported, got dataset={dataset!r}")
-    return str(label) == "Normal"
+    dataset = dataset.lower()
+    if dataset == "ucf":
+        return str(label) == "Normal"
+    if dataset == "xd":
+        # XD labels may include multiple event codes (for example ``B1-B2``).
+        # Official VadCLIP uses ``A`` exclusively for normal videos.
+        return str(label).split("-")[0] == "A"
+    raise ValueError(f"unsupported dataset={dataset!r}; expected 'ucf' or 'xd'")
 
 
 def read_csv(path: str | Path) -> pd.DataFrame:

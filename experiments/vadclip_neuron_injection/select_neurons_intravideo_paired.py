@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Select CLIP neurons with VadCLIP-guided intra-video paired ShiftScore.
 
-Each abnormal UCF training video supplies both ends of its own pseudo-score
+Each abnormal training video supplies both ends of its own pseudo-score
 ranking: top-p snippets are pseudo-abnormal and bottom-p snippets are
 pseudo-normal.  Pure normal videos only estimate the z-score statistics used
 when producing the selected-neuron feature.
@@ -100,8 +100,8 @@ def paired_indices(scores: np.ndarray, top_p: float) -> tuple[np.ndarray, np.nda
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Select UCF CLIP neurons by intra-video paired ShiftScore.")
-    parser.add_argument("--dataset", choices=["ucf"], required=True)
+    parser = argparse.ArgumentParser(description="Select CLIP neurons by intra-video paired ShiftScore.")
+    parser.add_argument("--dataset", choices=["ucf", "xd"], required=True)
     parser.add_argument("--source-train-csv", required=True)
     parser.add_argument("--hidden-manifest", required=True)
     parser.add_argument("--pseudo-csv", required=True)
