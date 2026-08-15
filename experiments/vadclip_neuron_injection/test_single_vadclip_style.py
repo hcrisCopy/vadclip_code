@@ -58,7 +58,7 @@ def main() -> None:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--vadclip-root", default="VadCLIP")
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0, help="Official VadCLIP UCF loader default.")
     parser.add_argument("--residual-hidden-dim", type=int, default=1024)
     parser.add_argument("--residual-depth", type=int, default=3)
     parser.add_argument("--clean", action="store_true")

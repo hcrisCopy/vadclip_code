@@ -26,7 +26,8 @@ class ResidualInjectionVadCLIP(nn.Module):
 
     The residual MLP's final linear layer is zero initialized, so the initial
     forward pass is exactly the supplied 512D VadCLIP baseline.  Training only
-    updates the LayerNorm, MLP and scalar sigmoid gate.
+    updates the LayerNorm, MLP and scalar sigmoid gate; the frozen baseline
+    still follows the official model's train/eval mode transitions.
     """
 
     def __init__(
@@ -72,13 +73,14 @@ class ResidualInjectionVadCLIP(nn.Module):
 
     def freeze_base(self) -> None:
         self.base.requires_grad_(False)
-        self.base.eval()
         self._base_frozen = True
 
     def train(self, mode: bool = True):
         super().train(mode)
-        if self._base_frozen:
-            self.base.eval()
+        # ``requires_grad=False`` freezes baseline weights.  Do not force its
+        # mode to eval here: official VadCLIP calls model.train() at each epoch
+        # and model.eval() only during validation.  The base therefore retains
+        # exactly those train/eval transitions while remaining frozen.
         return self
 
     def forward(self, visual: torch.Tensor, padding_mask, text: list[str], lengths: torch.Tensor):

@@ -83,8 +83,9 @@ python experiments/vadclip_neuron_injection/train_single_vadclip_style.py \
   --vadclip-root VadCLIP \
   --max-epoch 10 \
   --batch-size 64 \
-  --lr 7e-5 \
-  --num-workers 4 \
+  --lr 2e-5 \
+  --num-workers 0 \
+  --eval-interval-samples 1280 \
   --seed 234 \
   --residual-hidden-dim 1024 \
   --residual-depth 3 \
@@ -97,7 +98,7 @@ python experiments/vadclip_neuron_injection/test_single_vadclip_style.py \
   --model-path ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/training/model_best.pth \
   --out-dir ../vadclip_data/work_ucf_residual/compare_bottom10/perlayer_top64/evaluation \
   --vadclip-root VadCLIP \
-  --num-workers 4 \
+  --num-workers 0 \
   --residual-hidden-dim 1024 \
   --residual-depth 3 \
   --device cuda

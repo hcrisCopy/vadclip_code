@@ -129,10 +129,13 @@ def clasm_loss(logits: torch.Tensor, labels: torch.Tensor, lengths: torch.Tensor
 
 
 def text_separation_loss(text_features: torch.Tensor) -> torch.Tensor:
-    normal = text_features[0] / text_features[0].norm(dim=-1, keepdim=True).clamp(min=1e-6)
+    # Match VadCLIP/src/ucf_train.py exactly.  The baseline does not add an
+    # epsilon in this loss; the numerical safeguard is handled by the normal
+    # CLIP representation rather than by changing its objective.
+    normal = text_features[0] / text_features[0].norm(dim=-1, keepdim=True)
     loss = torch.zeros((), device=text_features.device)
     for index in range(1, text_features.shape[0]):
-        anomaly = text_features[index] / text_features[index].norm(dim=-1, keepdim=True).clamp(min=1e-6)
+        anomaly = text_features[index] / text_features[index].norm(dim=-1, keepdim=True)
         loss = loss + torch.abs(normal @ anomaly)
     return loss / 13.0 * 1e-1
 
@@ -164,8 +167,12 @@ def main() -> None:
     parser.add_argument("--vadclip-root", default="VadCLIP")
     parser.add_argument("--max-epoch", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=64, help="Per normal/anomaly loader batch, matching the supplied UCF command.")
-    parser.add_argument("--lr", type=float, default=7e-5)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=2e-5, help="Official VadCLIP UCF learning rate.")
+    parser.add_argument("--num-workers", type=int, default=0, help="Official VadCLIP UCF loader default.")
+    parser.add_argument(
+        "--eval-interval-samples", type=int, default=1280,
+        help="Validate every this many paired UCF samples; official VadCLIP UCF uses 1280.",
+    )
     parser.add_argument("--seed", type=int, default=234)
     parser.add_argument("--residual-hidden-dim", type=int, default=1024)
     parser.add_argument("--residual-depth", type=int, default=3)
@@ -178,8 +185,8 @@ def main() -> None:
         raise RuntimeError("--device cuda was requested but CUDA is unavailable")
     if args.clean and args.resume:
         parser.error("--clean and --resume cannot be used together")
-    if args.max_epoch <= 0 or args.batch_size <= 0 or args.lr <= 0:
-        parser.error("max-epoch, batch-size and lr must be positive")
+    if args.max_epoch <= 0 or args.batch_size <= 0 or args.lr <= 0 or args.eval_interval_samples <= 0:
+        parser.error("max-epoch, batch-size, lr and eval-interval-samples must be positive")
     device = torch.device(args.device)
     out_dir = clean_dir(args.out_dir) if args.clean else ensure_dir(args.out_dir)
     checkpoint_path, model_path = Path(args.checkpoint_path), Path(args.model_path)
@@ -200,7 +207,8 @@ def main() -> None:
     model = build_residual_model(
         options, args.vadclip_root, str(device), contract, args.residual_hidden_dim, args.residual_depth
     )
-    start_epoch, best_metric, global_step = 0, float("-inf"), 0
+    # Official VadCLIP starts its best AUC threshold from zero.
+    start_epoch, best_metric, global_step = 0, 0.0, 0
     resume_checkpoint = None
     if args.resume:
         if not checkpoint_path.exists():
@@ -227,7 +235,9 @@ def main() -> None:
     optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad], lr=args.lr
     )
-    scheduler = MultiStepLR(optimizer, milestones=[4, 8], gamma=0.1)
+    scheduler = MultiStepLR(
+        optimizer, milestones=options.scheduler_milestones, gamma=options.scheduler_rate
+    )
     if resume_checkpoint is not None:
         optimizer.load_state_dict(resume_checkpoint["optimizer_state_dict"])
         scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
@@ -235,9 +245,9 @@ def main() -> None:
     normal_dataset = UCFConcatTrainDataset(args.train_list, options.visual_length, expected_width, normal=True)
     anomaly_dataset = UCFConcatTrainDataset(args.train_list, options.visual_length, expected_width, normal=False)
     normal_loader = DataLoader(normal_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True,
-                               num_workers=args.num_workers, pin_memory=True)
+                               num_workers=args.num_workers)
     anomaly_loader = DataLoader(anomaly_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True,
-                                num_workers=args.num_workers, pin_memory=True)
+                                num_workers=args.num_workers)
     batches = min(len(normal_loader), len(anomaly_loader))
     if batches <= 0:
         raise RuntimeError("one UCF loader is empty after batch/drop_last; inspect CSV or lower --batch-size")
@@ -249,6 +259,7 @@ def main() -> None:
         "dataset": args.dataset, "train_list": args.train_list, "test_list": args.test_list,
         "neuron_json": args.neuron_json, "vadclip_root": args.vadclip_root,
         "batch_size_per_loader": args.batch_size, "lr": args.lr, "max_epoch": args.max_epoch,
+        "num_workers": args.num_workers, "eval_interval_samples": args.eval_interval_samples,
         "residual_hidden_dim": args.residual_hidden_dim, "residual_depth": args.residual_depth,
         "checkpoint_selection": "maximum UCF logits1 ROC-AUC, matching the official VadCLIP UCF train loop",
     })
@@ -258,6 +269,7 @@ def main() -> None:
         model.train()
         normal_iter, anomaly_iter = iter(normal_loader), iter(anomaly_loader)
         totals = {"loss": 0.0, "loss1": 0.0, "loss2": 0.0, "loss3": 0.0}
+        last_metrics = None
         progress = tqdm(range(batches), desc=f"train epoch {epoch + 1}/{args.max_epoch}", unit="batch")
         for iteration in progress:
             normal_feature, normal_label, normal_length = next(normal_iter)
@@ -272,36 +284,58 @@ def main() -> None:
             loss = loss1 + loss2 + loss3
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at epoch={epoch + 1}, batch={iteration + 1}")
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             global_step += 1
             for key, value in (("loss", loss), ("loss1", loss1), ("loss2", loss2), ("loss3", loss3)):
                 totals[key] += float(value.item())
             progress.set_postfix({key: f"{value / (iteration + 1):.4f}" for key, value in totals.items()})
+            # This is deliberately the original UCF cadence: at zero-based
+            # iteration i, step is i * batch_size * 2, not global_step.
+            official_step = iteration * normal_loader.batch_size * 2
+            if official_step != 0 and official_step % args.eval_interval_samples == 0:
+                print(
+                    f"epoch: {epoch + 1} | step: {official_step} | "
+                    f"loss1: {totals['loss1'] / (iteration + 1):.6f} | "
+                    f"loss2: {totals['loss2'] / (iteration + 1):.6f} | loss3: {loss3.item():.6f}",
+                    flush=True,
+                )
+                _records, last_metrics = run_evaluation(
+                    model, test_loader, options.visual_length, device, gt_path, segment_path, label_path,
+                    args.vadclip_root, description=f"validation epoch {epoch + 1}, step {official_step}",
+                )
+                print_metrics(last_metrics)
+                metric = float(last_metrics["roc_auc_logits1"])
+                if metric > best_metric:
+                    best_metric = metric
+                    torch.save(model.state_dict(), model_path)
+                    print(f"new best model: ROC-AUC1={best_metric:.6f} -> {model_path}", flush=True)
         scheduler.step()
-        _records, metrics = run_evaluation(
-            model, test_loader, options.visual_length, device, gt_path, segment_path, label_path,
-            args.vadclip_root, description=f"validation epoch {epoch + 1}/{args.max_epoch}",
-        )
-        print_metrics(metrics)
-        metric = float(metrics["roc_auc_logits1"])
+        # The official implementation reloads the best checkpoint after every
+        # epoch.  It intentionally keeps the optimiser state from the full
+        # epoch; doing the same preserves its optimisation trajectory.
+        if not model_path.exists():
+            raise RuntimeError(
+                "No official-cadence validation produced a best model. "
+                "Lower --eval-interval-samples or check the UCF loader length."
+            )
+        model.load_state_dict(state_dict_from_file(str(model_path)), strict=True)
         checkpoint = {
-            "epoch": epoch, "global_step": global_step, "best_metric": max(best_metric, metric),
+            "epoch": epoch, "global_step": global_step, "best_metric": best_metric,
             "model_state_dict": model.state_dict(), "optimizer_state_dict": optimizer.state_dict(),
-            "scheduler_state_dict": scheduler.state_dict(), "metrics": metrics,
+            "scheduler_state_dict": scheduler.state_dict(), "metrics": last_metrics,
         }
         torch.save(checkpoint, checkpoint_path)
-        if metric > best_metric:
-            best_metric = metric
-            torch.save(model.state_dict(), model_path)
-            print(f"new best model: ROC-AUC1={best_metric:.6f} -> {model_path}", flush=True)
         append_history(out_dir / "history.csv", {
             "epoch": epoch + 1, "global_step": global_step,
             **{key: totals[key] / batches for key in totals},
-            "roc_auc_logits1": metrics["roc_auc_logits1"], "ap_logits1": metrics["ap_logits1"],
-            "roc_auc_logits2": metrics["roc_auc_logits2"], "ap_logits2": metrics["ap_logits2"],
-            "detection_map_average": metrics["detection_map_average"], "gate": float(model.residual_gate().detach().cpu()),
+            "roc_auc_logits1": None if last_metrics is None else last_metrics["roc_auc_logits1"],
+            "ap_logits1": None if last_metrics is None else last_metrics["ap_logits1"],
+            "roc_auc_logits2": None if last_metrics is None else last_metrics["roc_auc_logits2"],
+            "ap_logits2": None if last_metrics is None else last_metrics["ap_logits2"],
+            "detection_map_average": None if last_metrics is None else last_metrics["detection_map_average"],
+            "gate": float(model.residual_gate().detach().cpu()),
         })
     print(f"finished; best UCF logits1 ROC-AUC={best_metric:.6f}; model={model_path}", flush=True)
 

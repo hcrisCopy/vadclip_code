@@ -41,7 +41,9 @@ def add_vadclip_source(vadclip_root: str) -> None:
 
 def build_test_loader(csv_path: str, visual_length: int, expected_width: int, num_workers: int) -> DataLoader:
     dataset = UCFConcatTestDataset(csv_path, visual_length, expected_width)
-    return DataLoader(dataset, batch_size=1, shuffle=False, num_workers=num_workers, pin_memory=True)
+    # No pin_memory argument in the official UCF test loader; preserve that
+    # default while retaining a configurable worker count for resumed tests.
+    return DataLoader(dataset, batch_size=1, shuffle=False, num_workers=num_workers)
 
 
 def infer_item(model, item, visual_length: int, prompt_text: list[str], device: torch.device) -> tuple[np.ndarray, np.ndarray, np.ndarray, str, str]:
