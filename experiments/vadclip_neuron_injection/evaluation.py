@@ -67,6 +67,14 @@ def infer_item(model, item, visual_length: int, prompt_text: list[str], device: 
     return prob1, prob2, logits2.detach().cpu().numpy().astype(np.float32), path, label
 
 
+def softmax_numpy(logits: np.ndarray) -> np.ndarray:
+    """Match ``logits2.softmax(dim=-1)`` used by official ``ucf_test.py``."""
+    shifted = np.asarray(logits, dtype=np.float64)
+    shifted = shifted - shifted.max(axis=1, keepdims=True)
+    probabilities = np.exp(shifted)
+    return probabilities / probabilities.sum(axis=1, keepdims=True)
+
+
 def summarize_records(records: list[tuple[np.ndarray, np.ndarray, np.ndarray, str, str]], gt_path: str, segment_path: str, label_path: str, vadclip_root: str) -> dict[str, object]:
     if not records:
         raise RuntimeError("no UCF test records were evaluated")
@@ -112,7 +120,10 @@ def summarize_records(records: list[tuple[np.ndarray, np.ndarray, np.ndarray, st
 
     segments = np.load(segment_path, allow_pickle=True)
     labels = np.load(label_path, allow_pickle=True)
-    element_logits = [np.repeat(record[2], 16, axis=0) for record in records]
+    # The official UCF evaluator passes language *probabilities* to its
+    # detection-mAP routine, not unnormalised logits.  Keep raw logits in
+    # resumable per-video files and convert only at metric time.
+    element_logits = [np.repeat(softmax_numpy(record[2]), 16, axis=0) for record in records]
     detection_map, ious = getDetectionMAP(element_logits, segments, labels, excludeNormal=False)
     metrics["detection_map"] = {f"iou_{iou:.1f}": float(value) for iou, value in zip(ious, detection_map)}
     metrics["detection_map_average"] = float(np.mean(detection_map))
