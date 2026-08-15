@@ -172,7 +172,8 @@ python experiments/vadclip_neuron_injection/build_concat_features.py \
   --hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_train_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_xd_residual/compare_bottom10/perlayer_top64/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_xd_residual/compare_bottom10/perlayer_top64/features/train \
-  --out-csv ../vadclip_data/work_xd_residual/compare_bottom10/perlayer_top64/xd_concat_train.csv
+  --out-csv ../vadclip_data/work_xd_residual/compare_bottom10/perlayer_top64/xd_concat_train.csv \
+  --keep-missing
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
   --source-csv ../vad_data/work_xd/xd_test_local.csv \
@@ -227,3 +228,5 @@ XD 的产物位置与 UCF 同构，只是根目录为：
 ```
 
 `metrics.json` 写入 `AUC1/AP1`、`AUC2/AP2` 和 detection mAP。XD 官方训练按 `AP2` 选择模型，故正式汇报应优先读取 `AP2`；XD 论文协议并不使用 UCF 表 2 的 Ano-AUC。
+
+当前复用的 XD train hidden manifest 有 3,950 个视频组，而 `xd_train_local.csv` 有 3,954 个视频组；已知 4 个视频没有 hidden。正式 train 特征构建因此显式使用 `--keep-missing`，并在 `features/train/skipped_rows.csv` 记录全部被跳过的原始行。由于每个训练视频有 10 个 CLIP 变体，最终 `xd_concat_train.csv` 应为 39,500 行数据（CSV 共 39,501 行，含表头）；`skipped_rows.csv` 应记录 40 行数据（共 41 行，含表头）。这与神经元选择实际采用的 2,046 个 normal + 1,904 个 abnormal 视频完全一致。测试集不能随意跳过视频，否则会破坏与 ground truth 的帧级对齐。
