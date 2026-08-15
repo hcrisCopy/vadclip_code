@@ -334,6 +334,8 @@ def main() -> None:
             "ap_logits1": None if last_metrics is None else last_metrics["ap_logits1"],
             "roc_auc_logits2": None if last_metrics is None else last_metrics["roc_auc_logits2"],
             "ap_logits2": None if last_metrics is None else last_metrics["ap_logits2"],
+            "ano_auc_logits1": None if last_metrics is None else last_metrics["ano_auc_logits1"],
+            "ano_auc_logits2": None if last_metrics is None else last_metrics["ano_auc_logits2"],
             "detection_map_average": None if last_metrics is None else last_metrics["detection_map_average"],
             "gate": float(model.residual_gate().detach().cpu()),
         })

@@ -76,12 +76,36 @@ def summarize_records(records: list[tuple[np.ndarray, np.ndarray, np.ndarray, st
     expected = len(prob1) * 16
     if expected != len(gt):
         raise ValueError(f"UCF frame alignment failed: prediction frames={expected}, gt frames={len(gt)}")
+    # VadCLIP Table 2 also reports Ano-AUC: frame-level ROC-AUC after
+    # excluding *purely normal videos*.  Normal frames before/after an event
+    # inside an abnormal video remain negative examples.  Build GT slices from
+    # the same ordered per-video records so this cannot silently drift from
+    # the official full-UCF alignment.
+    offset = 0
+    ano_gt, ano_prob1, ano_prob2 = [], [], []
+    for record in records:
+        frame_count = len(record[0]) * 16
+        video_gt = gt[offset:offset + frame_count]
+        if len(video_gt) != frame_count:
+            raise ValueError("UCF record-to-GT frame slicing failed")
+        if record[4] != "Normal":
+            ano_gt.append(video_gt)
+            ano_prob1.append(np.repeat(record[0], 16))
+            ano_prob2.append(np.repeat(record[1], 16))
+        offset += frame_count
+    if offset != len(gt) or not ano_gt:
+        raise ValueError("unable to construct anomalous-video-only UCF evaluation set")
+    ano_gt_array = np.concatenate(ano_gt)
     metrics: dict[str, object] = {
         "videos": len(records), "snippet_scores": int(len(prob1)), "frame_scores": int(expected),
         "roc_auc_logits1": float(roc_auc_score(gt, np.repeat(prob1, 16))),
         "ap_logits1": float(average_precision_score(gt, np.repeat(prob1, 16))),
         "roc_auc_logits2": float(roc_auc_score(gt, np.repeat(prob2, 16))),
         "ap_logits2": float(average_precision_score(gt, np.repeat(prob2, 16))),
+        "ano_auc_logits1": float(roc_auc_score(ano_gt_array, np.concatenate(ano_prob1))),
+        "ano_auc_logits2": float(roc_auc_score(ano_gt_array, np.concatenate(ano_prob2))),
+        "ano_videos": int(sum(record[4] != "Normal" for record in records)),
+        "ano_frame_scores": int(len(ano_gt_array)),
     }
     add_vadclip_source(vadclip_root)
     from utils.ucf_detectionMAP import getDetectionMAP
@@ -109,7 +133,8 @@ def print_metrics(metrics: dict[str, object]) -> None:
     print(
         "UCF metrics | "
         f"AUC1={metrics['roc_auc_logits1']:.6f} AP1={metrics['ap_logits1']:.6f} | "
-        f"AUC2={metrics['roc_auc_logits2']:.6f} AP2={metrics['ap_logits2']:.6f}",
+        f"AUC2={metrics['roc_auc_logits2']:.6f} AP2={metrics['ap_logits2']:.6f} | "
+        f"Ano-AUC1={metrics['ano_auc_logits1']:.6f} Ano-AUC2={metrics['ano_auc_logits2']:.6f}",
         flush=True,
     )
     for key, value in metrics["detection_map"].items():

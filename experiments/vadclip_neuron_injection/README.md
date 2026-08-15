@@ -117,7 +117,7 @@ python experiments/vadclip_neuron_injection/test_single_vadclip_style.py \
   training/model_best.pth                    # 最大 logits1 ROC-AUC 的模型
   training/history.csv / run_config.json
   evaluation/per_video/*.npz                 # 可逐视频复用的预测
-  evaluation/metrics.json
+  evaluation/metrics.json                    # AUC1/2、论文表 2 的 Ano-AUC1/2、AP、detection mAP
 ```
 
 训练意外中断后，在原训练命令末尾加 `--resume`；它会恢复模型、optimizer、scheduler、epoch 和最佳指标。伪分数、拼接特征和测试会默认跳过已完成且契约正确的单项文件。数据变更或要完全重算时，对对应命令加 `--clean`，不要对其他阶段盲目清理。
