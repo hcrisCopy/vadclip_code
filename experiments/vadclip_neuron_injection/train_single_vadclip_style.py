@@ -217,6 +217,12 @@ def main() -> None:
         model.freeze_base()
         print(f"initialized frozen VadCLIP baseline tensors: {copied}", flush=True)
 
+    # CLIPVAD constructs its frozen CLIP backbone on ``device`` internally,
+    # while this wrapper's newly added LayerNorm/MLP are born on CPU.  Move the
+    # complete wrapper only after checkpoint/baseline loading and before the
+    # optimiser is created, otherwise the first residual LayerNorm receives a
+    # CUDA input with CPU affine parameters.
+    model.to(device)
     trainable = [name for name, parameter in model.named_parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(
         [parameter for parameter in model.parameters() if parameter.requires_grad], lr=args.lr
