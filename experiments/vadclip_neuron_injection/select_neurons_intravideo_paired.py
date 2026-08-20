@@ -99,6 +99,49 @@ def paired_indices(scores: np.ndarray, top_p: float) -> tuple[np.ndarray, np.nda
     return top.astype(np.int64), bottom.astype(np.int64)
 
 
+def global_top_indices(scores: np.ndarray, topk: int) -> np.ndarray:
+    """Return deterministic flat indices for the global top-k score entries."""
+    flat_scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+    if topk <= 0 or topk > flat_scores.size:
+        raise ValueError(f"topk={topk} must be in [1, {flat_scores.size}]")
+    return np.argsort(-flat_scores, kind="mergesort")[:topk]
+
+
+def bootstrap_stability_frequency(
+    delta_array: np.ndarray,
+    topk: int,
+    repeats: int,
+    fraction: float,
+    seed: int,
+    sigma_min: float,
+) -> tuple[np.ndarray, int]:
+    """Estimate global-top-k inclusion frequency by video-level subsampling.
+
+    Every repeat samples whole abnormal videos without replacement.  This keeps
+    snippets from one video together, so the paired-effect unit remains the
+    same video-level delta used by the main ShiftScore calculation.
+    """
+    if repeats <= 0:
+        return np.ones(delta_array.shape[1:], dtype=np.float32), int(delta_array.shape[0])
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("bootstrap fraction must be in (0, 1]")
+    if delta_array.shape[0] < 2:
+        raise ValueError("at least two abnormal videos are required for stability selection")
+
+    sampled_videos = max(2, int(np.ceil(fraction * delta_array.shape[0])))
+    sampled_videos = min(sampled_videos, int(delta_array.shape[0]))
+    rng = np.random.default_rng(seed)
+    hits = np.zeros(delta_array.shape[1:], dtype=np.int32)
+    for _ in tqdm(range(repeats), desc="global selection stability", unit="repeat"):
+        indices = rng.choice(delta_array.shape[0], size=sampled_videos, replace=False)
+        sampled = delta_array[indices]
+        mean_delta = sampled.mean(axis=0)
+        std_delta = sampled.std(axis=0, ddof=1)
+        sampled_scores = np.abs(mean_delta) / (std_delta + sigma_min)
+        hits.reshape(-1)[global_top_indices(sampled_scores, topk)] += 1
+    return (hits.astype(np.float32) / float(repeats)), sampled_videos
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Select CLIP neurons by intra-video paired ShiftScore.")
     parser.add_argument("--dataset", choices=["ucf", "xd"], required=True)
@@ -112,6 +155,15 @@ def main() -> None:
     selector.add_argument("--topk-global", type=int, default=None)
     parser.add_argument("--normal-stat-snippets-per-video", type=int, default=256)
     parser.add_argument("--sigma-min", type=float, default=1e-6)
+    parser.add_argument(
+        "--bootstrap-repeats", type=int, default=0,
+        help="With global selection, repeat video-level subsampling and rank by ShiftScore × inclusion frequency.",
+    )
+    parser.add_argument(
+        "--bootstrap-fraction", type=float, default=0.80,
+        help="Fraction of valid abnormal videos sampled without replacement per stability repeat.",
+    )
+    parser.add_argument("--bootstrap-seed", type=int, default=234)
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
@@ -125,6 +177,12 @@ def main() -> None:
         parser.error("--topk-per-layer must be positive")
     if args.topk_global is not None and args.topk_global <= 0:
         parser.error("--topk-global must be positive")
+    if args.bootstrap_repeats < 0:
+        parser.error("--bootstrap-repeats must be non-negative")
+    if not 0.0 < args.bootstrap_fraction <= 1.0:
+        parser.error("--bootstrap-fraction must be in (0, 1]")
+    if args.bootstrap_repeats and args.topk_global is None:
+        parser.error("--bootstrap-repeats requires --topk-global so the final selection remains global")
     if args.normal_stat_snippets_per_video <= 0 or args.sigma_min <= 0:
         parser.error("normal-stat-snippets-per-video and sigma-min must be positive")
 
@@ -196,17 +254,32 @@ def main() -> None:
     if not np.isfinite(shift_scores).all():
         raise RuntimeError("non-finite ShiftScore")
 
+    if args.topk_global is not None:
+        stability_frequency, sampled_videos = bootstrap_stability_frequency(
+            delta_array,
+            args.topk_global,
+            args.bootstrap_repeats,
+            args.bootstrap_fraction,
+            args.bootstrap_seed,
+            args.sigma_min,
+        )
+        selection_scores = shift_scores * stability_frequency
+    else:
+        stability_frequency = np.ones_like(shift_scores, dtype=np.float32)
+        selection_scores = shift_scores
+        sampled_videos = 0
+
     selected = []
     if args.topk_global is not None:
-        if args.topk_global > shift_scores.size:
-            raise ValueError("--topk-global exceeds total selected-layer dimensions")
-        flat = np.argsort(-shift_scores.reshape(-1), kind="mergesort")[:args.topk_global]
+        flat = global_top_indices(selection_scores, args.topk_global)
         for layer in range(shift_scores.shape[0]):
             dims = (flat[flat // shift_scores.shape[1] == layer] % shift_scores.shape[1]).astype(np.int64)
             if len(dims):
                 selected.append({
                     "layer_index": int(layer), "dims": dims.tolist(),
-                    "scores": shift_scores[layer, dims].astype(float).tolist(),
+                    "scores": selection_scores[layer, dims].astype(float).tolist(),
+                    "shift_scores": shift_scores[layer, dims].astype(float).tolist(),
+                    "stability_frequency": stability_frequency[layer, dims].astype(float).tolist(),
                     "mean_deltas": mean_delta[layer, dims].astype(float).tolist(),
                     "std_deltas": std_delta[layer, dims].astype(float).tolist(),
                     "directions": np.sign(mean_delta[layer, dims]).astype(int).tolist(),
@@ -232,6 +305,13 @@ def main() -> None:
     np.save(out_dir / "mean_delta.npy", mean_delta.astype(np.float32))
     np.save(out_dir / "std_delta.npy", std_delta.astype(np.float32))
     np.save(out_dir / "shift_scores.npy", shift_scores.astype(np.float32))
+    np.save(out_dir / "stability_frequency.npy", stability_frequency.astype(np.float32))
+    np.save(out_dir / "selection_scores.npy", selection_scores.astype(np.float32))
+    selection_method = (
+        "global_shift_score_times_bootstrap_frequency"
+        if args.topk_global is not None and args.bootstrap_repeats
+        else "shift_score"
+    )
     save_json(output_json, {
         "method": "vadclip_intravideo_paired_shift_v1",
         "dataset": args.dataset,
@@ -243,9 +323,22 @@ def main() -> None:
         "num_layers": int(shift_scores.shape[0]), "hidden_dim": int(shift_scores.shape[1]),
         "token_pool": token_pool, "selection_mode": mode, "topk_per_layer": args.topk_per_layer,
         "topk_global": args.topk_global, "visual_width": visual_width,
+        "selection_score": selection_method,
+        "bootstrap_stability": {
+            "enabled": bool(args.bootstrap_repeats),
+            "repeats": int(args.bootstrap_repeats),
+            "fraction": float(args.bootstrap_fraction),
+            "seed": int(args.bootstrap_seed),
+            "sampling_unit": "abnormal_video_delta_without_replacement",
+            "sampled_videos_per_repeat": int(sampled_videos),
+            "final_rank": "raw_shift_score_times_global_topk_inclusion_frequency",
+        },
         "normal_mean_path": str(normal_mean_path), "normal_std_path": str(normal_std_path),
         "mean_delta_path": str(out_dir / "mean_delta.npy"), "std_delta_path": str(out_dir / "std_delta.npy"),
-        "shift_scores_path": str(out_dir / "shift_scores.npy"), "source_train_csv": args.source_train_csv,
+        "shift_scores_path": str(out_dir / "shift_scores.npy"),
+        "stability_frequency_path": str(out_dir / "stability_frequency.npy"),
+        "selection_scores_path": str(out_dir / "selection_scores.npy"),
+        "source_train_csv": args.source_train_csv,
         "hidden_manifest": args.hidden_manifest, "pseudo_csv": args.pseudo_csv, "selected": selected,
     })
     write_csv(out_dir / "video_pairs.csv", [
@@ -253,6 +346,12 @@ def main() -> None:
         "positive_score_mean", "negative_score_mean",
     ], pair_rows)
     write_csv(out_dir / "skipped_videos.csv", ["key", "label", "role", "reason"], skipped)
+    if args.topk_global is not None and args.bootstrap_repeats:
+        print(
+            f"stability global selection: repeats={args.bootstrap_repeats}, "
+            f"fraction={args.bootstrap_fraction:.3f}, sampled_videos={sampled_videos}",
+            flush=True,
+        )
     print(f"wrote {output_json}: {visual_width} selected dimensions", flush=True)
 
 
