@@ -19,17 +19,25 @@ from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from common import XD_LABELS, clean_dir, ensure_dir, load_clip_feature, load_json, process_train_feature, read_csv, save_json
+from common import XD_LABELS, clean_dir, ensure_dir, is_normal_label, load_clip_feature, load_json, process_train_feature, read_csv, save_json
 from models import add_vadclip_source, build_residual_model
+from ranking import PseudoRankingTargets, dual_branch_temporal_ranking_loss
 from xd_evaluation import build_test_loader, print_metrics, run_evaluation
 
 
 class XDConcatTrainDataset(Dataset):
     """Official single XD train loader with concat-width validation."""
 
-    def __init__(self, csv_path: str, visual_length: int, expected_width: int) -> None:
+    def __init__(
+        self,
+        csv_path: str,
+        visual_length: int,
+        expected_width: int,
+        ranking_targets: PseudoRankingTargets | None = None,
+    ) -> None:
         self.frame = read_csv(csv_path).reset_index(drop=True)
         self.visual_length, self.expected_width = int(visual_length), int(expected_width)
+        self.ranking_targets = ranking_targets
 
     def __len__(self) -> int:
         return len(self.frame)
@@ -41,7 +49,13 @@ class XDConcatTrainDataset(Dataset):
         if feature.shape[1] != self.expected_width:
             raise ValueError(f"{path}: expected {self.expected_width}D concat feature, got {feature.shape[1]}D")
         feature, length = process_train_feature(feature, self.visual_length)
-        return torch.from_numpy(feature), str(row["label"]), int(length)
+        label = str(row["label"])
+        teacher = (
+            self.ranking_targets.target_for(path)
+            if self.ranking_targets is not None and not is_normal_label("xd", label)
+            else np.zeros(self.visual_length, dtype=np.float32)
+        )
+        return torch.from_numpy(feature), label, int(length), torch.from_numpy(teacher)
 
 
 def set_seed(seed: int) -> None:
@@ -171,6 +185,14 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=234)
     parser.add_argument("--residual-hidden-dim", type=int, default=1024)
     parser.add_argument("--residual-depth", type=int, default=3)
+    parser.add_argument(
+        "--ranking-pseudo-csv", default="",
+        help="Optional frozen-baseline group_scores.csv. Enables M1 pseudo-score ranking supervision.",
+    )
+    parser.add_argument("--rank-loss-weight", type=float, default=0.10)
+    parser.add_argument("--rank-top-p", type=float, default=0.10)
+    parser.add_argument("--rank-intra-margin", type=float, default=0.10)
+    parser.add_argument("--rank-cross-margin", type=float, default=0.10)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--clean", action="store_true")
     parser.add_argument("--device", default="cuda")
@@ -182,6 +204,10 @@ def main() -> None:
         parser.error("--clean and --resume cannot be used together")
     if args.max_epoch <= 0 or args.batch_size <= 0 or args.lr <= 0:
         parser.error("max-epoch, batch-size and lr must be positive")
+    if args.rank_loss_weight < 0 or not 0.0 < args.rank_top_p <= 0.5:
+        parser.error("rank-loss-weight must be non-negative and rank-top-p must be in (0, 0.5]")
+    if args.rank_intra_margin < 0 or args.rank_cross_margin < 0:
+        parser.error("rank-intra-margin and rank-cross-margin must be non-negative")
     device = torch.device(args.device)
     out_dir = clean_dir(args.out_dir) if args.clean else ensure_dir(args.out_dir)
     checkpoint_path, model_path = Path(args.checkpoint_path), Path(args.model_path)
@@ -231,8 +257,18 @@ def main() -> None:
         scheduler.load_state_dict(resume_checkpoint["scheduler_state_dict"])
     print(f"trainable residual parameters: {trainable}", flush=True)
 
+    ranking_targets = (
+        PseudoRankingTargets(args.dataset, args.train_list, args.ranking_pseudo_csv, options.visual_length)
+        if args.ranking_pseudo_csv else None
+    )
+    if ranking_targets is not None:
+        print(
+            f"M1 ranking supervision: weight={args.rank_loss_weight:g}, top_p={args.rank_top_p:.3f}, "
+            f"margins=({args.rank_intra_margin:g},{args.rank_cross_margin:g})",
+            flush=True,
+        )
     train_loader = DataLoader(
-        XDConcatTrainDataset(args.train_list, options.visual_length, expected_width),
+        XDConcatTrainDataset(args.train_list, options.visual_length, expected_width, ranking_targets=ranking_targets),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -255,6 +291,13 @@ def main() -> None:
         "num_workers": args.num_workers,
         "residual_hidden_dim": args.residual_hidden_dim,
         "residual_depth": args.residual_depth,
+        "ranking_pseudo_csv": args.ranking_pseudo_csv,
+        "ranking_enabled": ranking_targets is not None,
+        "rank_loss_weight": args.rank_loss_weight,
+        "rank_top_p": args.rank_top_p,
+        "rank_intra_margin": args.rank_intra_margin,
+        "rank_cross_margin": args.rank_cross_margin,
+        "ranking_definition": "confidence-weighted top/bottom pseudo ranking plus hard-normal ranking on both official anomaly outputs",
         "validation": "once per epoch, matching official VadCLIP XD",
         "checkpoint_selection": "maximum XD language-branch AP2, matching official VadCLIP xd_train.py",
     })
@@ -262,22 +305,40 @@ def main() -> None:
     prompt_text = list(XD_LABELS.values())
     for epoch in range(start_epoch, args.max_epoch):
         model.train()
-        totals = {"loss": 0.0, "loss1": 0.0, "loss2": 0.0, "loss3": 0.0}
+        totals = {
+            "loss": 0.0, "loss1": 0.0, "loss2": 0.0, "loss3": 0.0,
+            "rank_intra": 0.0, "rank_cross": 0.0, "rank": 0.0,
+        }
         progress = tqdm(train_loader, desc=f"train epoch {epoch + 1}/{args.max_epoch}", unit="batch")
-        for iteration, (visual, raw_labels, lengths) in enumerate(progress):
-            visual, lengths = visual.to(device, non_blocking=True), lengths.to(device, non_blocking=True)
+        for iteration, (visual, raw_labels, lengths, teacher_scores) in enumerate(progress):
+            visual = visual.to(device, non_blocking=True)
+            lengths = lengths.to(device, non_blocking=True)
+            teacher_scores = teacher_scores.to(device, non_blocking=True)
+            abnormal_mask = torch.tensor(
+                [not is_normal_label("xd", str(label)) for label in raw_labels], dtype=torch.bool, device=device
+            )
             labels = label_tensor(list(raw_labels), device)
             text_features, logits1, logits2 = model(visual, None, prompt_text, lengths)
             loss1 = clas2_loss(logits1, labels, lengths)
             loss2 = clasm_loss(logits2, labels, lengths)
             loss3 = text_separation_loss(text_features)
             loss = loss1 + loss2 + loss3 * 1e-4
+            rank_intra = rank_cross = rank_loss = torch.zeros_like(loss)
+            if ranking_targets is not None and args.rank_loss_weight > 0:
+                rank_intra, rank_cross, rank_loss, _rank_stats = dual_branch_temporal_ranking_loss(
+                    logits1, logits2, teacher_scores, lengths, abnormal_mask,
+                    args.rank_top_p, args.rank_intra_margin, args.rank_cross_margin,
+                )
+                loss = loss + args.rank_loss_weight * rank_loss
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite loss at epoch={epoch + 1}, batch={iteration + 1}")
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            for key, value in (("loss", loss), ("loss1", loss1), ("loss2", loss2), ("loss3", loss3)):
+            for key, value in (
+                ("loss", loss), ("loss1", loss1), ("loss2", loss2), ("loss3", loss3),
+                ("rank_intra", rank_intra), ("rank_cross", rank_cross), ("rank", rank_loss),
+            ):
                 totals[key] += float(value.item())
             progress.set_postfix({key: f"{value / (iteration + 1):.4f}" for key, value in totals.items()})
 

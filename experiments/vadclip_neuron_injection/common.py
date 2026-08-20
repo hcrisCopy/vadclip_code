@@ -188,6 +188,30 @@ def process_train_feature(feature: np.ndarray, visual_length: int) -> tuple[np.n
     return feature.astype(np.float32), original_length
 
 
+def process_train_scores(scores: np.ndarray, visual_length: int) -> tuple[np.ndarray, int]:
+    """Apply the UCF/XD training-time temporal reduction to scalar scores.
+
+    This is the scalar counterpart of :func:`process_train_feature`.  Keeping
+    the same interval means is important when a long feature sequence is
+    reduced before the model sees it: pseudo-score ranks must refer to the
+    same temporal bins as the residual-injection input.
+    """
+    scores = np.asarray(scores, dtype=np.float32).reshape(-1)
+    original_length = int(scores.size)
+    if original_length <= 0:
+        raise ValueError("cannot process an empty pseudo-score sequence")
+    if original_length > visual_length:
+        reduced = np.zeros(visual_length, dtype=np.float32)
+        boundaries = np.linspace(0, original_length, visual_length + 1, dtype=np.int32)
+        for index in range(visual_length):
+            left, right = boundaries[index], boundaries[index + 1]
+            reduced[index] = scores[left:right].mean() if left != right else scores[left]
+        return reduced, visual_length
+    if original_length < visual_length:
+        scores = np.pad(scores, (0, visual_length - original_length), mode="constant")
+    return scores.astype(np.float32), original_length
+
+
 def process_test_feature(feature: np.ndarray, visual_length: int) -> tuple[np.ndarray, int]:
     """Match VadCLIP ``utils.tools.process_split``, including its final pad chunk."""
     feature = np.asarray(feature, dtype=np.float32)
