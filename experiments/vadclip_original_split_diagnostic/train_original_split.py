@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as functional
 from torch.optim.lr_scheduler import MultiStepLR
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, RandomSampler
 from tqdm import tqdm
 
 from shared import add_injection_source, initialize_residual_from_baseline, state_dict_from_file
@@ -163,6 +163,13 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--samples-per-epoch", type=int, default=0,
+        help=(
+            "XD-only diagnostic option: draw this many train rows with replacement each epoch. "
+            "0 preserves the ordinary one-pass-per-epoch loader."
+        ),
+    )
     parser.add_argument("--eval-interval-samples", type=int, default=1280)
     parser.add_argument("--seed", type=int, default=234)
     parser.add_argument("--residual-hidden-dim", type=int, default=1024)
@@ -182,6 +189,10 @@ def main() -> None:
         parser.error("batch-size must be positive when specified")
     if args.lr is not None and args.lr <= 0:
         parser.error("lr must be positive when specified")
+    if args.samples_per_epoch < 0:
+        parser.error("samples-per-epoch must be non-negative")
+    if args.dataset != "xd" and args.samples_per_epoch:
+        parser.error("samples-per-epoch is currently supported only for XD diagnostic training")
     for path in (args.validation_gt_path, args.validation_segment_path, args.validation_label_path):
         if not Path(path).is_file():
             raise FileNotFoundError(f"missing aligned validation annotation: {path}")
@@ -251,7 +262,15 @@ def main() -> None:
         from xd_evaluation import build_test_loader, print_metrics, run_evaluation
 
         train_dataset = OriginalConcatTrainDataset(args.train_list, options.visual_length, expected_width, "xd")
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=args.num_workers)
+        if args.samples_per_epoch:
+            sampler = RandomSampler(train_dataset, replacement=True, num_samples=args.samples_per_epoch)
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, sampler=sampler, num_workers=args.num_workers
+            )
+            sampling_mode = "replacement_matched_steps"
+        else:
+            train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=args.num_workers)
+            sampling_mode = "ordinary_one_pass"
         if not len(train_loader):
             raise RuntimeError("XD diagnostic train loader is empty; increase train fraction or inspect the split")
         normal_loader = anomaly_loader = None
@@ -259,6 +278,9 @@ def main() -> None:
         validation_loader = build_test_loader(args.validation_list, options.visual_length, expected_width, args.num_workers)
         prompt_text = list(XD_LABELS.values())
         selection_name = "ap_logits2"
+
+    if args.dataset == "ucf":
+        sampling_mode = "paired_one_pass"
 
     def validate(description: str) -> dict[str, object]:
         _records, metrics = run_evaluation(
@@ -285,6 +307,11 @@ def main() -> None:
         "lr": lr,
         "max_epoch": args.max_epoch,
         "num_workers": args.num_workers,
+        "train_dataset_rows": len(normal_dataset) + len(anomaly_dataset) if args.dataset == "ucf" else len(train_dataset),
+        "sampling_mode": sampling_mode,
+        "samples_per_epoch": int(args.samples_per_epoch) if args.dataset == "xd" else None,
+        "optimizer_steps_per_epoch": batches,
+        "planned_optimizer_updates": int(batches * args.max_epoch),
         "eval_interval_samples": args.eval_interval_samples,
         "residual_hidden_dim": args.residual_hidden_dim,
         "residual_depth": args.residual_depth,
@@ -344,6 +371,7 @@ def main() -> None:
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+                global_step += 1
                 for key, value in (("loss", loss), ("loss1", loss1), ("loss2", loss2), ("loss3", loss3)):
                     totals[key] += float(value.item())
                 progress.set_postfix({key: f"{value / (iteration + 1):.4f}" for key, value in totals.items()})
