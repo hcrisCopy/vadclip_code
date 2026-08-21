@@ -46,7 +46,8 @@ python experiments/vadclip_neuron_injection/build_concat_features.py \
   --hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_train_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_xd_residual/top_vs_normal_global768/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_xd_residual/top_vs_normal_global768/features/train \
-  --out-csv ../vadclip_data/work_xd_residual/top_vs_normal_global768/xd_concat_train.csv
+  --out-csv ../vadclip_data/work_xd_residual/top_vs_normal_global768/xd_concat_train.csv \
+  --keep-missing
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
   --source-csv ../vad_data/work_xd/xd_test_local.csv \

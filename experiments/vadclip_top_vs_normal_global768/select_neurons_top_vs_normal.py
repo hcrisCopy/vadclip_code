@@ -224,19 +224,25 @@ def main() -> None:
     token_pool = manifest_token_pool(args.hidden_manifest)
     labels_by_key = source_labels(args.source_train_csv)
     scores_by_key = pseudo_score_map(args.pseudo_csv)
-    normal_keys, abnormal_keys = [], []
-    for key, label in labels_by_key.items():
+    normal_keys, abnormal_keys, skipped = [], [], []
+    for key, label in sorted(labels_by_key.items()):
+        role = "normal" if is_normal_label(args.dataset, label) else "abnormal"
         if key not in hidden_by_key:
-            raise FileNotFoundError(f"{args.hidden_manifest}: missing hidden artifact for source video {key!r}")
-        if is_normal_label(args.dataset, label):
+            # The shared XD hidden cache is known to omit four train videos.
+            # Match the established global-768 protocol: retain an audit trail,
+            # skip only those training videos, and never apply this to test data.
+            skipped.append([key, label, role, "missing_hidden"])
+            continue
+        if role == "normal":
             normal_keys.append(key)
-        else:
-            if key not in scores_by_key:
-                raise KeyError(f"{args.pseudo_csv}: missing abnormal video {key!r}")
-            pseudo_label, _score_path = scores_by_key[key]
-            if pseudo_label != label:
-                raise ValueError(f"{key}: pseudo label {pseudo_label!r} differs from source label {label!r}")
-            abnormal_keys.append(key)
+            continue
+        if key not in scores_by_key:
+            skipped.append([key, label, role, "missing_pseudo_score"])
+            continue
+        pseudo_label, _score_path = scores_by_key[key]
+        if pseudo_label != label:
+            raise ValueError(f"{key}: pseudo label {pseudo_label!r} differs from source label {label!r}")
+        abnormal_keys.append(key)
     if not normal_keys or not abnormal_keys:
         raise RuntimeError(f"matched normal={len(normal_keys)}, abnormal={len(abnormal_keys)}; both are required")
     print(f"matched pure-normal reference videos={len(normal_keys)}, pseudo-positive abnormal videos={len(abnormal_keys)}", flush=True)
@@ -320,6 +326,7 @@ def main() -> None:
         ["key", "label", "hidden_length", "raw_score_length", "top_count", "top_score_mean", "status"],
         rows,
     )
+    write_csv(out_dir / "skipped_videos.csv", ["key", "label", "role", "reason"], skipped)
     save_json(output_json, {
         "method": "vadclip_top_vs_pure_normal_global_shift_v1",
         "dataset": args.dataset,
@@ -336,6 +343,7 @@ def main() -> None:
         "num_normal_videos_for_reference": len(normal_keys),
         "num_normal_snippets_for_reference": int(normal_count),
         "num_abnormal_videos_with_top_deltas": len(deltas),
+        "skipped_training_videos": len(skipped),
         "num_layers": int(selection_scores.shape[0]),
         "hidden_dim": int(selection_scores.shape[1]),
         "token_pool": token_pool,
