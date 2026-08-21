@@ -331,7 +331,7 @@ def main() -> None:
                         print(f"new best model: {selection_name}={best_metric:.6f} -> {model_path}", flush=True)
         else:
             progress = tqdm(train_loader, desc=f"train epoch {epoch + 1}/{args.max_epoch}", unit="batch")
-            for visual, raw_labels, lengths in progress:
+            for iteration, (visual, raw_labels, lengths) in enumerate(progress):
                 visual, lengths = visual.to(device, non_blocking=True), lengths.to(device, non_blocking=True)
                 labels = label_tensor("xd", list(raw_labels), device)
                 text_features, logits1, logits2 = model(visual, None, prompt_text, lengths)
