@@ -6,7 +6,10 @@
 
 ```bash
 cd vadclip_code
+export OMP_NUM_THREADS=1
 ```
+
+`OMP_NUM_THREADS` 必须为正整数；服务器环境若继承为 `0`，PyTorch 会输出 `libgomp` 警告。设为 `1` 只消除该环境警告，不改变模型、数据或训练逻辑。
 
 ## UCF
 
