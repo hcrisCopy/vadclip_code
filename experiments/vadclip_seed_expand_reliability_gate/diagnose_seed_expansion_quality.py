@@ -26,7 +26,7 @@ def add_sources() -> None:
 
 
 add_sources()
-from common import clean_dir, ensure_dir, is_normal_label, load_clip_feature, read_csv, save_json  # noqa: E402
+from common import base_key, clean_dir, ensure_dir, is_normal_label, load_clip_feature, read_csv, save_json  # noqa: E402
 from analyze_pseudo_label_quality import (  # noqa: E402
     ScoreRecord,
     artifact_path,
@@ -186,7 +186,9 @@ def main() -> None:
     rows: list[dict[str, object]] = []
     offset = 0
     for record in tqdm(records, desc="reliability quality against held-out GT", unit="video"):
-        key = Path(record.source_path).stem
+        # Test CSV rows carry a feature-chunk suffix (``__0``), while the
+        # shared hidden manifest is indexed by its video-level base key.
+        key = base_key(record.source_path)
         if key not in test_hidden:
             raise FileNotFoundError(f"test hidden manifest has no artifact for {key}")
         hidden, _metadata = load_hidden_for_diagnostic(test_hidden[key])

@@ -20,10 +20,10 @@
 ```bash
 python experiments/vadclip_seed_expand_reliability_gate/diagnose_seed_expansion_quality.py \
   --dataset xd \
-  --source-train-csv ../vadclip_data/work_xd/xd_train_local.csv \
+  --source-train-csv ../vad_data/work_xd/xd_train_local.csv \
   --train-hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_train_8gpu/manifest.csv \
-  --pseudo-csv ../vadclip_data/work_xd_residual/compare_bottom10/global_top768/pseudo_scores/group_scores.csv \
-  --test-list ../vadclip_data/work_xd/xd_test_local.csv \
+  --pseudo-csv ../vadclip_data/work_xd_residual/compare_bottom10/pseudo_scores/group_scores.csv \
+  --test-list ../vad_data/work_xd/xd_test_local.csv \
   --test-hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_test_8gpu/manifest.csv \
   --model-path ../vadclip_data/model/vadclip_xd.pth \
   --gt-path VadCLIP/list/gt.npy \
@@ -50,9 +50,9 @@ python experiments/vadclip_seed_expand_reliability_gate/diagnose_seed_expansion_
 ```bash
 python experiments/vadclip_seed_expand_reliability_gate/select_neurons_seed_expand.py \
   --dataset xd \
-  --source-train-csv ../vadclip_data/work_xd/xd_train_local.csv \
+  --source-train-csv ../vad_data/work_xd/xd_train_local.csv \
   --hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_train_8gpu/manifest.csv \
-  --pseudo-csv ../vadclip_data/work_xd_residual/compare_bottom10/global_top768/pseudo_scores/group_scores.csv \
+  --pseudo-csv ../vadclip_data/work_xd_residual/compare_bottom10/pseudo_scores/group_scores.csv \
   --out-dir ../vadclip_data/work_xd_residual/seed_expand_reliability_global768/neurons \
   --seed-top-p 0.10 \
   --expand-top-p 0.30 \
@@ -76,7 +76,7 @@ python experiments/vadclip_neuron_injection/make_concat_neuron_json.py \
   --clip-dim 512
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
-  --source-csv ../vadclip_data/work_xd/xd_train_local.csv \
+  --source-csv ../vad_data/work_xd/xd_train_local.csv \
   --hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_train_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_xd_residual/seed_expand_reliability_global768/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_xd_residual/seed_expand_reliability_global768/features/train \
@@ -84,7 +84,7 @@ python experiments/vadclip_neuron_injection/build_concat_features.py \
   --keep-missing
 
 python experiments/vadclip_neuron_injection/build_concat_features.py \
-  --source-csv ../vadclip_data/work_xd/xd_test_local.csv \
+  --source-csv ../vad_data/work_xd/xd_test_local.csv \
   --hidden-manifest ../vad_data/work_xd/clip_hidden_stride16_test_8gpu/manifest.csv \
   --neuron-json ../vadclip_data/work_xd_residual/seed_expand_reliability_global768/concat_neurons/selected_neurons.json \
   --out-dir ../vadclip_data/work_xd_residual/seed_expand_reliability_global768/features/test \
