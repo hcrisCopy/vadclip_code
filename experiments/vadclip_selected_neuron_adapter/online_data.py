@@ -22,6 +22,7 @@ class VideoSample:
     label: str
     source_path: str
     video_path: str
+    crop_type: int
 
 
 @dataclass(frozen=True)
@@ -70,38 +71,72 @@ def hidden_frame_indices(hidden_path: Path) -> np.ndarray:
     return indices
 
 
-def decode_frames(video_path: Path, indices: np.ndarray) -> list[Image.Image]:
-    """Decode exact indices with decord when available, otherwise OpenCV."""
-    try:
-        from decord import VideoReader, cpu
+def source_crop_type(source_path: str) -> int:
+    """Read the original XD 10-crop code from a ``...__0.npy`` feature name."""
+    stem = Path(source_path).stem
+    _head, marker, tail = stem.rpartition("__")
+    if not marker or not tail.isdigit() or not 0 <= int(tail) <= 9:
+        raise ValueError(f"{source_path}: expected XD feature name ending in __0 through __9")
+    return int(tail)
 
-        reader = VideoReader(str(video_path), ctx=cpu(0))
-        if int(indices[-1]) >= len(reader):
-            raise ValueError(f"{video_path}: requested frame {indices[-1]}, video has {len(reader)} frames")
-        # decord 0.6 returns one NDArray [T,H,W,3], not an iterable of
-        # per-frame NDArrays.  Convert it once for compatibility with both
-        # the extractor's batch semantics and current decord releases.
-        batch = reader.get_batch(indices.tolist()).asnumpy()
-        return [Image.fromarray(frame).convert("RGB") for frame in batch]
-    except ImportError:
-        try:
-            import cv2
-        except ImportError as error:
-            raise RuntimeError("install decord or opencv-python to decode online CLIP frames") from error
-        capture = cv2.VideoCapture(str(video_path))
-        if not capture.isOpened():
-            raise RuntimeError(f"OpenCV cannot open video: {video_path}")
-        output = []
-        try:
-            for index in indices.tolist():
-                capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
-                ok, frame = capture.read()
-                if not ok:
-                    raise RuntimeError(f"OpenCV cannot decode frame {index} from {video_path}")
-                output.append(Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)))
-        finally:
-            capture.release()
-        return output
+
+def vadclip_xd_crop(frame_bgr: np.ndarray, crop_type: int) -> Image.Image:
+    """Independent reproduction of official ``VadCLIP/src/crop.py:image_crop``."""
+    import cv2
+
+    image = cv2.resize(frame_bgr, dsize=(340, 256))
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    if crop_type == 0:
+        image = image[16:240, 58:282, :]
+    elif crop_type == 1:
+        image = image[:224, :224, :]
+    elif crop_type == 2:
+        image = image[:224, -224:, :]
+    elif crop_type == 3:
+        image = image[-224:, :224, :]
+    elif crop_type == 4:
+        image = image[-224:, -224:, :]
+    elif crop_type == 5:
+        image = cv2.flip(image[16:240, 58:282, :], 1)
+    elif crop_type == 6:
+        image = cv2.flip(image[:224, :224, :], 1)
+    elif crop_type == 7:
+        image = cv2.flip(image[:224, -224:, :], 1)
+    elif crop_type == 8:
+        image = cv2.flip(image[-224:, :224, :], 1)
+    elif crop_type == 9:
+        image = cv2.flip(image[-224:, -224:, :], 1)
+    else:
+        raise ValueError(f"crop_type must be in [0,9], got {crop_type}")
+    return Image.fromarray(image).convert("RGB")
+
+
+def decode_frames(video_path: Path, indices: np.ndarray, crop_type: int) -> list[Image.Image]:
+    """Decode and spatially crop exact frames as the original XD feature cache did."""
+    try:
+        import cv2
+    except ImportError as error:
+        raise RuntimeError("opencv-python is required to reproduce XD's original 10-crop features") from error
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError(f"OpenCV cannot open video: {video_path}")
+    wanted = {int(frame): position for position, frame in enumerate(indices.tolist())}
+    output: list[Image.Image | None] = [None] * len(indices)
+    frame_index = 0
+    try:
+        while frame_index <= int(indices[-1]):
+            ok, frame = capture.read()
+            if not ok:
+                raise RuntimeError(f"OpenCV cannot decode frame {frame_index} from {video_path}")
+            position = wanted.get(frame_index)
+            if position is not None:
+                output[position] = vadclip_xd_crop(frame, crop_type)
+            frame_index += 1
+    finally:
+        capture.release()
+    if any(frame is None for frame in output):
+        raise RuntimeError(f"{video_path}: unable to decode every requested frame")
+    return [frame for frame in output if frame is not None]
 
 
 class OnlineVideoDataset(Dataset):
@@ -139,6 +174,7 @@ class OnlineVideoDataset(Dataset):
     def __getitem__(self, index: int) -> VideoSample:
         row = self.rows.loc[index]
         source_path, label = str(row["path"]), str(row["label"])
+        crop_type = source_crop_type(source_path)
         entry = self.entries[base_key(source_path)]
         indices = hidden_frame_indices(entry.hidden_path)
         # The established concat builder treats the old 512D source feature
@@ -152,9 +188,12 @@ class OnlineVideoDataset(Dataset):
                 f"{source_path}: hidden manifest has {len(indices)} snippets but source feature requires {target_length}"
             )
         indices = indices[:target_length]
-        images = decode_frames(entry.video_path, indices)
+        images = decode_frames(entry.video_path, indices, crop_type)
         frames = torch.stack([self.preprocess(image) for image in images], dim=0)
-        return VideoSample(frames=frames, label=label, source_path=source_path, video_path=str(entry.video_path))
+        return VideoSample(
+            frames=frames, label=label, source_path=source_path,
+            video_path=str(entry.video_path), crop_type=crop_type,
+        )
 
 
 def one_item_collate(items: list[VideoSample]) -> VideoSample:

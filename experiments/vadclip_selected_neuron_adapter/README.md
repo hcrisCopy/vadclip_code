@@ -12,7 +12,7 @@
 - `../vad_data/work_xd/clip_hidden_stride16_*_8gpu/manifest.csv` 及它指向的 hidden `.npz`：复用 `video_path` 和精确 `frame_indices`，保证重新跑原视频时抽到与选择阶段相同的 snippet；
 - `../vad_data/work_xd/xd_*_local.csv`：复用原 512D 特征路径和弱标签。特征值**不进入 Adapter 训练**；只读取其时间长度，按既有拼接脚本的规则裁去 hidden 末尾多出的 snippet，并用于第一个零起点一致性校验。
 
-因为 `.npz` 中的 768D hidden 是已经计算完的结果，不能反向传播到后续 CLIP 层，所以训练必须从 `video_path` 在线重跑 CLIP。新代码只读取同级数据目录，没有跨项目 Python import。
+因为 `.npz` 中的 768D hidden 是已经计算完的结果，不能反向传播到后续 CLIP 层，所以训练必须从 `video_path` 在线重跑 CLIP。XD 原始特征文件名末尾的 `__0` 到 `__9` 是官方十裁剪编号；新代码按编号独立复刻相同空间裁剪后再送入 CLIP。新代码只读取同级数据目录，没有跨项目 Python import。
 
 ## 先做零起点一致性检查
 
