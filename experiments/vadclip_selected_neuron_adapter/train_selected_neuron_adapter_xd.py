@@ -67,6 +67,11 @@ def main() -> None:
     parser.add_argument("--num-workers", type=int, default=0, help="Raw video decoding workers; 0 is the safest official-style setting.")
     parser.add_argument("--frame-batch-size", type=int, default=128, help="CLIP frames per GPU forward; changes memory use only, never temporal data.")
     parser.add_argument("--adapter-rank", type=int, default=8)
+    parser.add_argument(
+        "--skip-missing-train-manifest",
+        action="store_true",
+        help="Explicitly omit training rows whose original video is absent from the reusable hidden manifest. Never applies to test rows.",
+    )
     parser.add_argument("--seed", type=int, default=234)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--clean", action="store_true")
@@ -89,8 +94,13 @@ def main() -> None:
     set_seed(args.seed)
     device = torch.device(args.device)
     options = baseline_options(args.vadclip_root)
-    train_dataset = OnlineVideoDataset(args.train_list, args.train_hidden_manifest, args.vadclip_root)
+    train_dataset = OnlineVideoDataset(
+        args.train_list, args.train_hidden_manifest, args.vadclip_root,
+        skip_missing_manifest=args.skip_missing_train_manifest,
+    )
     test_dataset = OnlineVideoDataset(args.test_list, args.test_hidden_manifest, args.vadclip_root)
+    if len(train_dataset.missing_manifest_rows):
+        train_dataset.missing_manifest_rows.to_csv(out_dir / "skipped_train_missing_manifest.csv", index=False)
     train_loader = DataLoader(
         train_dataset, batch_size=1, shuffle=True, num_workers=args.num_workers,
         collate_fn=one_item_collate,
@@ -132,6 +142,8 @@ def main() -> None:
         "baseline_frozen": True,
         "trainable": "only zero-start per-layer selected-neuron adapters",
         "adapter_rank": args.adapter_rank,
+        "skip_missing_train_manifest": args.skip_missing_train_manifest,
+        "skipped_train_rows": int(len(train_dataset.missing_manifest_rows)),
         "frame_batch_size": args.frame_batch_size,
         "batch_size": args.batch_size,
         "batch_implementation": "one variable-length video at a time with gradients accumulated over official batch-size samples",

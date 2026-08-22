@@ -40,6 +40,8 @@ python experiments/vadclip_selected_neuron_adapter/verify_zero_adapter_xd.py \
 
 下面保持 VadCLIP XD 的 `batch-size=96`、`lr=1e-5`、10 epoch、每 epoch 测试一次和 AP2 选最优模型。原始视频长度不同，在线 CLIP 必须逐视频跑；代码会把 96 个视频的梯度累积后再做一次 AdamW 更新，数学上对应官方 batch loss 的平均，不改变 snippet 和时间处理。`frame-batch-size` 只控制一次送入 CLIP 的帧数量，不改变视频内容或顺序。
 
+当前 XD 训练 CSV 有 4 个原视频、共 40 个切分特征行，在已有 raw-video/hidden manifest 中不存在；不能凭空在线重跑它们。正式命令显式加入 `--skip-missing-train-manifest`，并把名单写入 `training/skipped_train_missing_manifest.csv`。测试 manifest 已完整匹配 800 个测试行，测试侧绝不允许跳过。
+
 ```bash
 python experiments/vadclip_selected_neuron_adapter/train_selected_neuron_adapter_xd.py \
   --dataset xd \
@@ -59,6 +61,7 @@ python experiments/vadclip_selected_neuron_adapter/train_selected_neuron_adapter
   --num-workers 0 \
   --frame-batch-size 128 \
   --adapter-rank 8 \
+  --skip-missing-train-manifest \
   --seed 234 \
   --device cuda
 ```

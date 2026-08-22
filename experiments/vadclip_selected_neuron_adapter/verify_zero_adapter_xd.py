@@ -41,7 +41,9 @@ def main() -> None:
     model = build_model(options, args.vadclip_root, str(device), args.neuron_json, adapter_rank=8)
     copied = initialize_frozen_baseline(model, args.init_baseline_model)
     model.to(device).eval()
-    dataset = OnlineVideoDataset(args.source_list, args.hidden_manifest, args.vadclip_root)
+    # Verification needs only matching rows.  Missing raw videos are reported
+    # below; it never treats them as an alignment pass.
+    dataset = OnlineVideoDataset(args.source_list, args.hidden_manifest, args.vadclip_root, skip_missing_manifest=True)
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0, collate_fn=one_item_collate)
     rows = []
     for index, sample in enumerate(tqdm(loader, total=min(args.samples, len(loader)), desc="verify zero Adapter", unit="video")):
@@ -65,6 +67,7 @@ def main() -> None:
         })
     report = {
         "baseline_tensors_copied": copied,
+        "skipped_missing_manifest_rows": int(len(dataset.missing_manifest_rows)),
         "samples": rows,
         "atol": args.atol,
         "rtol": args.rtol,

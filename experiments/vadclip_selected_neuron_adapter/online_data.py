@@ -103,13 +103,31 @@ def decode_frames(video_path: Path, indices: np.ndarray) -> list[Image.Image]:
 class OnlineVideoDataset(Dataset):
     """Video frames aligned by the shared CLIP-hidden manifest, not guessed stride."""
 
-    def __init__(self, source_csv: str, hidden_manifest: str, vadclip_root: str) -> None:
-        self.rows = read_csv(source_csv).reset_index(drop=True)
+    def __init__(
+        self,
+        source_csv: str,
+        hidden_manifest: str,
+        vadclip_root: str,
+        skip_missing_manifest: bool = False,
+    ) -> None:
+        source_rows = read_csv(source_csv).reset_index(drop=True)
         self.entries = load_manifest(hidden_manifest)
         self.preprocess = build_clip_preprocess(vadclip_root)
-        absent = sorted({base_key(str(path)) for path in self.rows["path"]} - set(self.entries))
+        source_keys = source_rows["path"].map(lambda value: base_key(str(value)))
+        absent = sorted(set(source_keys) - set(self.entries))
+        self.missing_manifest_rows = source_rows.loc[source_keys.isin(absent), ["path", "label"]].copy()
         if absent:
-            raise FileNotFoundError(f"{len(absent)} source rows have no hidden-manifest entry; first={absent[0]!r}")
+            if not skip_missing_manifest:
+                raise FileNotFoundError(
+                    f"{len(absent)} source video keys ({len(self.missing_manifest_rows)} CSV rows) have no hidden-manifest entry; "
+                    f"first={absent[0]!r}. Do not skip evaluation rows; training may opt in explicitly."
+                )
+            print(
+                f"skip {len(self.missing_manifest_rows)} source rows from {len(absent)} videos without raw-video manifest entries",
+                flush=True,
+            )
+            source_rows = source_rows.loc[~source_keys.isin(absent)]
+        self.rows = source_rows.reset_index(drop=True)
 
     def __len__(self) -> int:
         return len(self.rows)
