@@ -11,7 +11,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from common import add_vadclip_source, base_key, read_csv, resolve_existing_path
+from common import add_vadclip_source, base_key, feature_length, read_csv, resolve_existing_path
 
 
 @dataclass(frozen=True)
@@ -141,6 +141,17 @@ class OnlineVideoDataset(Dataset):
         source_path, label = str(row["path"]), str(row["label"])
         entry = self.entries[base_key(source_path)]
         indices = hidden_frame_indices(entry.hidden_path)
+        # The established concat builder treats the old 512D source feature
+        # length as the temporal contract and crops a longer hidden sequence
+        # at its tail.  Do the same before decoding online frames.  We read
+        # only the .npy header here; cached feature values never enter the
+        # Adapter forward or loss.
+        target_length = feature_length(resolve_existing_path(source_path))
+        if len(indices) < target_length:
+            raise ValueError(
+                f"{source_path}: hidden manifest has {len(indices)} snippets but source feature requires {target_length}"
+            )
+        indices = indices[:target_length]
         images = decode_frames(entry.video_path, indices)
         frames = torch.stack([self.preprocess(image) for image in images], dim=0)
         return VideoSample(frames=frames, label=label, source_path=source_path, video_path=str(entry.video_path))
