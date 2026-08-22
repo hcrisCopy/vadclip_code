@@ -2,7 +2,7 @@
 
 这是对 global-768 的下一步实验：**不训练 VadCLIP baseline，也不训练 CLIP 原参数**；只在 CLIP ViT-B/16 的 12 个冻结 block 之间插入小 Adapter。每个 Adapter 只读取、修改该层被 global-768 选中的 CLS 神经元，并把修改后的 CLS token 送进下一层冻结 CLIP。
 
-它不是原来的“768D 拼接后预测一个 512D 残差”：旧方法只能读取缓存，不能让改动经过 CLIP 的后续层。这里每个 Adapter 的输出为零初始化，因此第 0 步严格等价于原 VadCLIP；训练的弱监督梯度可以从原 VadCLIP loss 反传到各层 Adapter。
+它不是原来的“768D 拼接后预测一个 512D 残差”：旧方法只能读取缓存，不能让改动经过 CLIP 的后续层。这里每个 Adapter 的输出为零初始化，最终输入使用 **特征锚定**：`原 512D 缓存 + (在线 Adapter-CLIP − 在线冻结 CLIP)`。因此第 0 步严格等价于原 VadCLIP；训练的弱监督梯度仍可从原 VadCLIP loss 反传到各层 Adapter。
 
 ## 可复用的数据
 
@@ -10,13 +10,13 @@
 
 - `../vadclip_data/work_xd_residual/top_vs_normal_global768/concat_neurons/selected_neurons.json`：global-768 的层号和神经元下标；
 - `../vad_data/work_xd/clip_hidden_stride16_*_8gpu/manifest.csv` 及它指向的 hidden `.npz`：复用 `video_path` 和精确 `frame_indices`，保证重新跑原视频时抽到与选择阶段相同的 snippet；
-- `../vad_data/work_xd/xd_*_local.csv`：复用原 512D 特征路径和弱标签。特征值**不进入 Adapter 训练**；只读取其时间长度，按既有拼接脚本的规则裁去 hidden 末尾多出的 snippet，并用于第一个零起点一致性校验。
+- `../vad_data/work_xd/xd_*_local.csv`：复用原 512D 特征路径和弱标签。它是冻结的 VadCLIP **特征锚点**；按既有拼接脚本的规则裁去 hidden 末尾多出的 snippet，在线 Adapter 只向它添加真实 CLIP 内部改动产生的差分。
 
-因为 `.npz` 中的 768D hidden 是已经计算完的结果，不能反向传播到后续 CLIP 层，所以训练必须从 `video_path` 在线重跑 CLIP。XD 原始特征文件名末尾的 `__0` 到 `__9` 是官方十裁剪编号；新代码按编号独立复刻相同空间裁剪后再送入 CLIP。新代码只读取同级数据目录，没有跨项目 Python import。
+因为 `.npz` 中的 768D hidden 是已经计算完的结果，不能反向传播到后续 CLIP 层，所以训练必须从 `video_path` 在线重跑 CLIP。XD 原始特征文件名末尾的 `__0` 到 `__9` 是官方十裁剪编号；新代码按编号独立复刻相同空间裁剪后再送入 CLIP。已验证当前原视频重算结果与官方发布 512D 缓存不完全一致，所以不替换原缓存，而是只把 Adapter 相对同一在线冻结 CLIP 的差分加回原缓存。新代码只读取同级数据目录，没有跨项目 Python import。
 
 ## 先做零起点一致性检查
 
-从 `vadclip_code` 运行。必须先通过：它检查 Adapter 仍为零时，在线重算的每个 512D snippet 特征是否等于原 VadCLIP 特征。若失败，不能训练，先检查视频路径、`frame_indices` 与特征缓存是否来自同一套抽帧流程。
+从 `vadclip_code` 运行。必须先通过：它检查 Adapter 仍为零时，特征锚定后的每个 512D snippet 是否严格等于原 VadCLIP 缓存；报告还会记录未锚定在线特征与旧缓存的差异，供数据溯源诊断。
 
 ```bash
 python experiments/vadclip_selected_neuron_adapter/verify_zero_adapter_xd.py \

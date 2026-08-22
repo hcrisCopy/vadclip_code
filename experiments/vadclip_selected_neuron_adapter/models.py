@@ -104,6 +104,36 @@ class SelectedNeuronAdapterVadCLIP(nn.Module):
             pieces.append(self.encode_images(frames[left:left + frame_batch_size]))
         return torch.cat(pieces, dim=0)
 
+    def encode_feature_anchored_sequence(
+        self,
+        frames: torch.Tensor,
+        source_feature: torch.Tensor,
+        frame_batch_size: int,
+    ) -> torch.Tensor:
+        """Apply the online Adapter difference to the original 512D cache.
+
+        The released XD 512D archive cannot be reproduced exactly from the
+        available raw videos, although the selected hidden cache is aligned.
+        Anchoring preserves the original VadCLIP input at zero Adapter while
+        retaining a differentiable change produced inside frozen CLIP blocks.
+        """
+        if source_feature.ndim != 2 or source_feature.shape[1] != 512:
+            raise ValueError(f"expected source [T,512] feature, got {tuple(source_feature.shape)}")
+        adapted_pieces, frozen_pieces = [], []
+        for left in range(0, frames.shape[0], frame_batch_size):
+            image_batch = frames[left:left + frame_batch_size]
+            adapted_pieces.append(self.encode_images(image_batch))
+            with torch.no_grad():
+                frozen_pieces.append(self.base.clipmodel.encode_image(image_batch))
+        adapted = torch.cat(adapted_pieces, dim=0)
+        frozen = torch.cat(frozen_pieces, dim=0).to(adapted.dtype)
+        if source_feature.shape != adapted.shape:
+            raise ValueError(
+                f"source cache shape {tuple(source_feature.shape)} and online CLIP shape {tuple(adapted.shape)} differ"
+            )
+        anchor = source_feature.to(device=adapted.device, dtype=adapted.dtype)
+        return anchor + (adapted - frozen)
+
     def forward(self, visual_features: torch.Tensor, padding_mask, text: list[str], lengths: torch.Tensor):
         return self.base(visual_features, padding_mask, text, lengths)
 

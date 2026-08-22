@@ -100,17 +100,6 @@ def load_feature(path: str | Path) -> np.ndarray:
     return feature
 
 
-def feature_length(path: str | Path) -> int:
-    """Read only the temporal length of a source 512D feature when possible."""
-    value = np.load(path, mmap_mode="r", allow_pickle=False)
-    if isinstance(value, np.lib.npyio.NpzFile):
-        key = "features" if "features" in value.files else value.files[0]
-        value = value[key]
-    if value.ndim != 2 or value.shape[0] <= 0:
-        raise ValueError(f"{path}: expected non-empty [T,D] feature, got {value.shape}")
-    return int(value.shape[0])
-
-
 def load_selected_dims(neuron_json: str | Path, expected_layers: int = 12) -> list[np.ndarray]:
     """Read the global-768 selection as one sorted dimension list per CLIP block."""
     config = load_json(neuron_json)

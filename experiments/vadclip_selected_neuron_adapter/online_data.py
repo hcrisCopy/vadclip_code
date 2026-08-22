@@ -11,7 +11,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from common import add_vadclip_source, base_key, feature_length, read_csv, resolve_existing_path
+from common import add_vadclip_source, base_key, load_feature, read_csv, resolve_existing_path
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,7 @@ class VideoSample:
     """One source feature row and its exact raw frames used by hidden extraction."""
 
     frames: torch.Tensor
+    source_feature: torch.Tensor
     label: str
     source_path: str
     video_path: str
@@ -180,9 +181,10 @@ class OnlineVideoDataset(Dataset):
         # The established concat builder treats the old 512D source feature
         # length as the temporal contract and crops a longer hidden sequence
         # at its tail.  Do the same before decoding online frames.  We read
-        # only the .npy header here; cached feature values never enter the
-        # Adapter forward or loss.
-        target_length = feature_length(resolve_existing_path(source_path))
+        # Adapter training keeps this as an immutable VadCLIP feature anchor;
+        # only the online CLIP difference induced by the Adapter is added.
+        source_feature = load_feature(resolve_existing_path(source_path))
+        target_length = int(source_feature.shape[0])
         if len(indices) < target_length:
             raise ValueError(
                 f"{source_path}: hidden manifest has {len(indices)} snippets but source feature requires {target_length}"
@@ -191,7 +193,7 @@ class OnlineVideoDataset(Dataset):
         images = decode_frames(entry.video_path, indices, crop_type)
         frames = torch.stack([self.preprocess(image) for image in images], dim=0)
         return VideoSample(
-            frames=frames, label=label, source_path=source_path,
+            frames=frames, source_feature=torch.from_numpy(source_feature), label=label, source_path=source_path,
             video_path=str(entry.video_path), crop_type=crop_type,
         )
 

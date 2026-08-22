@@ -141,6 +141,7 @@ def main() -> None:
         "init_baseline_model": args.init_baseline_model,
         "baseline_frozen": True,
         "trainable": "only zero-start per-layer selected-neuron adapters",
+        "feature_anchor": "original_512_cache + (online_adapter_clip - online_frozen_clip)",
         "adapter_rank": args.adapter_rank,
         "skip_missing_train_manifest": args.skip_missing_train_manifest,
         "skipped_train_rows": int(len(train_dataset.missing_manifest_rows)),
@@ -163,7 +164,9 @@ def main() -> None:
         for iteration, sample in enumerate(progress):
             group_size = min(args.batch_size, len(train_loader) - (iteration // args.batch_size) * args.batch_size)
             frames = sample.frames.to(device, non_blocking=True)
-            features = model.encode_frame_sequence(frames, args.frame_batch_size)
+            features = model.encode_feature_anchored_sequence(
+                frames, sample.source_feature.to(device, non_blocking=True), args.frame_batch_size
+            )
             visual, length = process_train_feature(features, options.visual_length)
             lengths = torch.as_tensor([length], dtype=torch.int64, device=device)
             labels = label_tensor(sample.label, device)

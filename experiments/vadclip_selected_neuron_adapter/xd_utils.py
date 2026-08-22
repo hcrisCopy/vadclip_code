@@ -78,7 +78,9 @@ def padding_mask(lengths: torch.Tensor, visual_length: int, device: torch.device
 def infer_sample(model, sample: VideoSample, visual_length: int, frame_batch_size: int, device: torch.device):
     """Online visual forward followed by the exact official XD scoring path."""
     frames = sample.frames.to(device, non_blocking=True)
-    features = model.encode_frame_sequence(frames, frame_batch_size)
+    features = model.encode_feature_anchored_sequence(
+        frames, sample.source_feature.to(device, non_blocking=True), frame_batch_size
+    )
     visual, original_length = process_test_feature(features, visual_length)
     lengths = test_chunk_lengths(original_length, visual_length).to(device)
     mask = padding_mask(lengths, visual_length, device)
