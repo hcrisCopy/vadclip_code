@@ -29,10 +29,18 @@ def label_tensor(label: str, device: torch.device) -> torch.Tensor:
     prompts = prompt_text()
     lookup = {name: index for index, name in enumerate(prompts)}
     output = torch.zeros((1, len(prompts)), dtype=torch.float32, device=device)
+    matched = False
     for code in str(label).split("-"):
+        # The official XD feature lists use ``0`` as a padding/no-event token
+        # in labels such as ``B2-0-0`` and ``B2-G-0``.
+        if code == "0":
+            continue
         if code not in XD_LABELS:
             raise ValueError(f"unrecognised XD label {label!r}")
         output[0, lookup[XD_LABELS[code]]] = 1.0
+        matched = True
+    if not matched:
+        raise ValueError(f"XD label contains no recognised event code: {label!r}")
     return output
 
 
