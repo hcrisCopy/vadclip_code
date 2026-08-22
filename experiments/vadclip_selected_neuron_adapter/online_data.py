@@ -78,7 +78,11 @@ def decode_frames(video_path: Path, indices: np.ndarray) -> list[Image.Image]:
         reader = VideoReader(str(video_path), ctx=cpu(0))
         if int(indices[-1]) >= len(reader):
             raise ValueError(f"{video_path}: requested frame {indices[-1]}, video has {len(reader)} frames")
-        return [Image.fromarray(frame.asnumpy()).convert("RGB") for frame in reader.get_batch(indices.tolist())]
+        # decord 0.6 returns one NDArray [T,H,W,3], not an iterable of
+        # per-frame NDArrays.  Convert it once for compatibility with both
+        # the extractor's batch semantics and current decord releases.
+        batch = reader.get_batch(indices.tolist()).asnumpy()
+        return [Image.fromarray(frame).convert("RGB") for frame in batch]
     except ImportError:
         try:
             import cv2
