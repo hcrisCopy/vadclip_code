@@ -12,7 +12,10 @@ def add_injection_source() -> None:
     """Expose repository-local shared feature and evaluation utilities."""
     source = str(INJECTION_DIR)
     if source not in sys.path:
-        sys.path.insert(0, source)
+        # Keep this diagnostic's directory ahead of shared utilities: it owns
+        # its own ``models.py`` and must never import an older experiment's
+        # model module by accident.
+        sys.path.append(source)
 
 
 def state_dict_from_file(path: str) -> dict:
